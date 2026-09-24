@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import sys
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -33,6 +34,7 @@ def load_gcs_graph(bucket, prefix='pages/', expected_files=None):
     prefix = prefix.rstrip('/') + '/' if prefix else ''
     base = f'https://storage.googleapis.com/storage/v1/b/{quote(bucket, safe="")}/o'
     started = time.perf_counter()
+    print(f'Listing HTML objects in gs://{bucket}/{prefix} ...', file=sys.stderr, flush=True)
     objects = []
     token = None
     seen_tokens = set()
@@ -63,10 +65,16 @@ def load_gcs_graph(bucket, prefix='pages/', expected_files=None):
     fingerprint_seconds = 0.0
     downloaded_bytes = 0
     fingerprint = hashlib.sha256()
+    progress_seconds = 0.0
+    print(f'Found {len(objects)} HTML files. Starting sequential download.', file=sys.stderr, flush=True)
+    print(f'{"Completed":>15} {"Percent":>8} {"MiB":>10} {"Elapsed(s)":>12} {"Files/s":>10} {"ETA(s)":>12}',
+          file=sys.stderr, flush=True)
 
     def pages():
-        nonlocal download_seconds, fingerprint_seconds, downloaded_bytes
-        for relative, name, generation in objects:
+        nonlocal download_seconds, fingerprint_seconds, downloaded_bytes, progress_seconds
+        progress_started = time.perf_counter()
+        last_report = progress_started
+        for completed, (relative, name, generation) in enumerate(objects, 1):
             before = time.perf_counter()
             url = base + '/' + quote(name, safe='') + '?' + urlencode(
                 {'alt': 'media', 'generation': generation})
@@ -79,10 +87,21 @@ def load_gcs_graph(bucket, prefix='pages/', expected_files=None):
             fingerprint.update(content)
             fingerprint_seconds += time.perf_counter() - before
             yield relative, content.decode('utf-8')
+            now = time.perf_counter()
+            if completed == 1 or completed % 100 == 0 or completed == len(objects) or now - last_report >= 30:
+                elapsed = now - progress_started
+                rate = completed / elapsed if elapsed > 0 else 0.0
+                eta = (len(objects) - completed) / rate if rate else 0.0
+                print(f'{completed:>7}/{len(objects):<7} {completed / len(objects):>7.1%} '
+                      f'{downloaded_bytes / (1024 * 1024):>10.2f} {elapsed:>12.1f} '
+                      f'{rate:>10.2f} {eta:>12.1f}', file=sys.stderr, flush=True)
+                last_report = now
+                progress_seconds += time.perf_counter() - now
 
     before = time.perf_counter()
     graph = build_graph((row[0] for row in objects), pages())
-    parse_seconds = time.perf_counter() - before - download_seconds - fingerprint_seconds
+    parse_seconds = time.perf_counter() - before - download_seconds - fingerprint_seconds - progress_seconds
+    print('Download and graph construction complete.', file=sys.stderr, flush=True)
     return graph, {
         'listing': listing_seconds,
         'download': download_seconds,
