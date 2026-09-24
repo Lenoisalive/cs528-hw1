@@ -21,8 +21,6 @@ def main():
     source.add_argument('--bucket', help='Public GCS bucket name without gs://')
     parser.add_argument('--prefix', default='pages/', help='GCS directory prefix (default: pages/)')
     parser.add_argument('--expected-files', type=int, help='Fail if the HTML file count differs')
-    parser.add_argument('--download-workers', type=int, default=1,
-                        help='GCS download threads only; default: 1 (sequential)')
     parser.add_argument('--environment', default='unspecified', help='Experiment label, e.g. local/cloudshell/vm')
     parser.add_argument('--output', type=Path, help='Optional JSON results file')
     parser.add_argument('--pagerank', action='store_true', help='Compute original iterative PageRank')
@@ -34,8 +32,6 @@ def main():
     parser.add_argument('--closeness-direction', choices=('outgoing', 'incoming'),
                         default='outgoing', help='Distance direction (default: outgoing)')
     args = parser.parse_args()
-    if args.download_workers < 1:
-        parser.error('--download-workers must be positive')
     if args.expected_files is not None and args.expected_files < 1:
         parser.error('--expected-files must be positive')
     environment = environment_info(args.environment)
@@ -44,7 +40,7 @@ def main():
         started = perf_counter()
         if args.bucket:
             graph, input_timings, input_info = load_gcs_graph(
-                args.bucket, args.prefix, args.expected_files, args.download_workers)
+                args.bucket, args.prefix, args.expected_files)
         else:
             graph = load_local_graph(args.input_dir)
             input_timings = {'read_parse_build': perf_counter() - started}

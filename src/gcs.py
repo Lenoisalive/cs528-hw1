@@ -1,7 +1,5 @@
-"""Anonymous GCS reads with optional bounded download concurrency."""
+"""Anonymous, sequential GCS JSON API reads without a local data cache."""
 
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 import hashlib
 import json
 import sys
@@ -29,12 +27,10 @@ def fetch(url):
         time.sleep(2 ** attempt)
 
 
-def load_gcs_graph(bucket, prefix='pages/', expected_files=None, download_workers=1):
+def load_gcs_graph(bucket, prefix='pages/', expected_files=None):
     """List immediate HTML children, pin generations, and stream into the graph."""
     if not bucket or any(char in bucket for char in '/:'):
         raise ValueError('Use a bucket name without gs:// or a path')
-    if isinstance(download_workers, bool) or not isinstance(download_workers, int) or download_workers < 1:
-        raise ValueError('download_workers must be a positive integer')
     prefix = prefix.rstrip('/') + '/' if prefix else ''
     base = f'https://storage.googleapis.com/storage/v1/b/{quote(bucket, safe="")}/o'
     started = time.perf_counter()
@@ -70,33 +66,20 @@ def load_gcs_graph(bucket, prefix='pages/', expected_files=None, download_worker
     downloaded_bytes = 0
     fingerprint = hashlib.sha256()
     progress_seconds = 0.0
-    print(f'Found {len(objects)} HTML files. Download workers: {download_workers}.', file=sys.stderr, flush=True)
+    print(f'Found {len(objects)} HTML files. Starting sequential download.', file=sys.stderr, flush=True)
     print(f'{"Completed":>15} {"Percent":>8} {"MiB":>10} {"Elapsed(s)":>12} {"Files/s":>10} {"ETA(s)":>12}',
           file=sys.stderr, flush=True)
 
-    def download_object(row):
-        _, name, generation = row
-        url = base + '/' + quote(name, safe='') + '?' + urlencode(
-            {'alt': 'media', 'generation': generation})
-        return fetch(url)
-
-    def downloaded_pages(pool):
-        nonlocal download_seconds
-        # Complete each bounded batch before parsing it on the calling thread.
-        for start in range(0, len(objects), download_workers):
-            batch = objects[start:start + download_workers]
-            before = time.perf_counter()
-            contents = (list(pool.map(download_object, batch)) if pool is not None
-                        else [download_object(row) for row in batch])
-            download_seconds += time.perf_counter() - before
-            for row, content in zip(batch, contents):
-                yield row[0], content
-
-    def pages(pool):
-        nonlocal fingerprint_seconds, downloaded_bytes, progress_seconds
+    def pages():
+        nonlocal download_seconds, fingerprint_seconds, downloaded_bytes, progress_seconds
         progress_started = time.perf_counter()
         last_report = progress_started
-        for completed, (relative, content) in enumerate(downloaded_pages(pool), 1):
+        for completed, (relative, name, generation) in enumerate(objects, 1):
+            before = time.perf_counter()
+            url = base + '/' + quote(name, safe='') + '?' + urlencode(
+                {'alt': 'media', 'generation': generation})
+            content = fetch(url)
+            download_seconds += time.perf_counter() - before
             before = time.perf_counter()
             downloaded_bytes += len(content)
             fingerprint.update(json.dumps([relative, len(content)]).encode('utf-8'))
@@ -116,8 +99,7 @@ def load_gcs_graph(bucket, prefix='pages/', expected_files=None, download_worker
                 progress_seconds += time.perf_counter() - now
 
     before = time.perf_counter()
-    with (ThreadPoolExecutor(max_workers=download_workers) if download_workers > 1 else nullcontext()) as pool:
-        graph = build_graph((row[0] for row in objects), pages(pool))
+    graph = build_graph((row[0] for row in objects), pages())
     parse_seconds = time.perf_counter() - before - download_seconds - fingerprint_seconds - progress_seconds
     print('Download and graph construction complete.', file=sys.stderr, flush=True)
     return graph, {
@@ -131,5 +113,4 @@ def load_gcs_graph(bucket, prefix='pages/', expected_files=None, download_worker
         'downloaded_bytes': downloaded_bytes,
         'dataset_sha256': fingerprint.hexdigest(),
         'object_count': len(objects),
-        'download_workers': download_workers,
     }
