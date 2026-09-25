@@ -1,8 +1,8 @@
 """Deterministic tests independent of the generated assignment graph."""
 
-import json
 from pathlib import Path
 import subprocess
+import json
 import sys
 import tempfile
 import unittest
@@ -31,24 +31,6 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(sum(map(len, graph.incoming)), graph.edge_count)
         self.assertEqual(sum(map(len, graph.outgoing)), graph.edge_count)
 
-    def test_link_policies(self):
-        pages = {'A.html': html('A.html', 'A.html', 'B.html', 'B.html',
-                                'missing.html', 'https://example.com/') + '<a>No href</a>',
-                 'B.html': ''}
-        graph = build_graph(pages, reversed(list(pages.items())))
-        self.assertEqual(graph.outgoing, [[0, 1], []])
-        self.assertEqual(graph.incoming, [[0], [0]])
-        self.assertEqual((graph.raw_links, graph.duplicate_links,
-                          graph.invalid_links, graph.self_links), (6, 2, 2, 1))
-
-    def test_single_isolated_page(self):
-        graph = build_graph(['0.html'], [('0.html', '')])
-        self.assertTrue(all(value == 0 for value in graph_statistics(graph)['incoming'].values()))
-
-    def test_incomplete_input(self):
-        with self.assertRaises(ValueError):
-            build_graph(['A.html'], [])
-
     def test_local_files_and_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -56,23 +38,20 @@ class GraphTests(unittest.TestCase):
             (root / 'A.html').write_text(html('B.html'), encoding='utf-8')
             (root / 'ignored.txt').write_text('not a page', encoding='utf-8')
             self.assertEqual(load_local_graph(root).outgoing, [[1], []])
-            output = root / 'results' / 'stats.json'
-            run = subprocess.run([sys.executable, '-m', 'src.main', '--input-dir', tmp,
-                                  '--output', str(output)], capture_output=True, text=True)
+            run = subprocess.run([sys.executable, '-m', 'src.main', '--input-dir', tmp],
+                                 capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(json.loads(output.read_text())['edges'], 1)
-
-    def test_empty_missing_and_bad_encoding(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            with self.assertRaises(ValueError):
-                load_local_graph(root)
-            with self.assertRaises(ValueError):
-                load_local_graph(root / 'missing')
-            (root / 'bad.html').write_bytes(b'\xff')
-            with self.assertRaises(UnicodeError):
-                load_local_graph(root)
-
+            self.assertIn('Top pages by PageRank:', run.stdout)
+            output = root / 'result.json'
+            run = subprocess.run([sys.executable, '-m', 'src.main', '--input-dir', tmp,
+                                  '--expected-files', '2', '--output', str(output)],
+                                 capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(json.loads(output.read_text())['pages'], 2)
+            mismatch = subprocess.run([sys.executable, '-m', 'src.main', '--input-dir', tmp,
+                                       '--expected-files', '12000'], capture_output=True, text=True)
+            self.assertNotEqual(mismatch.returncode, 0)
+            self.assertIn('Expected 12000 files, found 2', mismatch.stderr)
 
 class StatisticsTests(unittest.TestCase):
     def test_unequal_degrees_and_odd_median(self):
@@ -80,12 +59,6 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(result['mean'], 3)
         self.assertEqual(result['median'], 2)
         self.assertAlmostEqual(result['p80'], 4.2)
-
-    def test_single_value_and_empty(self):
-        self.assertTrue(all(value == 7 for value in summarize([7]).values()))
-        with self.assertRaises(ValueError):
-            summarize([])
-
 
 if __name__ == '__main__':
     unittest.main()

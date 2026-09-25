@@ -14,23 +14,20 @@ from .gcs import load_gcs_graph
 from .environment import environment_info
 
 
+PR_TOLERANCE = 0.005
+PR_MAX_ITERATIONS = 1000
+CLOSENESS_DIRECTION = 'outgoing'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--input-dir', type=Path, help='Directory containing *.html pages')
     source.add_argument('--bucket', help='Public GCS bucket name without gs://')
     parser.add_argument('--prefix', default='pages/', help='GCS directory prefix (default: pages/)')
-    parser.add_argument('--expected-files', type=int, help='Fail if the HTML file count differs')
+    parser.add_argument('--expected-files', type=int, help='Optional required HTML file count')
     parser.add_argument('--environment', default='unspecified', help='Experiment label, e.g. local/cloudshell/vm')
     parser.add_argument('--output', type=Path, help='Optional JSON results file')
-    parser.add_argument('--pagerank', action='store_true', help='Compute original iterative PageRank')
-    parser.add_argument('--pr-tolerance', type=float, default=0.005,
-                        help='Relative total-score change threshold (default: 0.005)')
-    parser.add_argument('--pr-max-iterations', type=int, default=1000,
-                        help='Maximum PageRank iterations (default: 1000)')
-    parser.add_argument('--closeness', action='store_true', help='Compute exact closeness centrality')
-    parser.add_argument('--closeness-direction', choices=('outgoing', 'incoming'),
-                        default='outgoing', help='Distance direction (default: outgoing)')
     args = parser.parse_args()
     if args.expected_files is not None and args.expected_files < 1:
         parser.error('--expected-files must be positive')
@@ -50,26 +47,27 @@ def main():
         loaded = perf_counter()
         result = graph_statistics(graph)
         stats_finished = perf_counter()
-        if args.pagerank:
-            result['pagerank'] = pagerank(graph, args.pr_tolerance, args.pr_max_iterations)
+        result['pagerank'] = pagerank(graph, PR_TOLERANCE, PR_MAX_ITERATIONS)
         pr_finished = perf_counter()
-        if args.closeness:
-            result['closeness'] = closeness_centrality(graph, args.closeness_direction)
+        result['closeness'] = closeness_centrality(graph, CLOSENESS_DIRECTION)
         finished = perf_counter()
         result['timing_seconds'] = {
             **input_timings,
             'statistics': stats_finished - loaded,
             'total': finished - started,
         }
-        if args.pagerank:
-            result['timing_seconds']['pagerank'] = pr_finished - stats_finished
-        if args.closeness:
-            result['timing_seconds']['closeness'] = finished - pr_finished
+        result['timing_seconds']['pagerank'] = pr_finished - stats_finished
+        result['timing_seconds']['closeness'] = finished - pr_finished
         result['environment'] = environment
         result['input'] = input_info
         result['started_at_utc'] = run_started
         result['parameters'] = {key: str(value) if isinstance(value, Path) else value
                                 for key, value in vars(args).items()}
+        result['parameters'].update({
+            'expected_files': args.expected_files, 'pagerank': True,
+            'pr_tolerance': PR_TOLERANCE, 'pr_max_iterations': PR_MAX_ITERATIONS,
+            'closeness': True, 'closeness_direction': CLOSENESS_DIRECTION,
+        })
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
@@ -83,22 +81,20 @@ def main():
     for stage, seconds in input_timings.items():
         print(f'{stage}: {seconds:.6f} seconds')
     print(f'Statistics: {stats_finished - loaded:.6f} seconds')
-    if args.pagerank:
-        pr = result['pagerank']
-        print('\nTop pages by PageRank:')
-        for rank, page in enumerate(pr['top_5'], 1):
-            print(f'{rank}. {page["page"]}: {page["score"]:.12g}')
-        print(f'Iterations: {pr["iterations"]}')
-        print(f'Total PageRank: {pr["total_score"]:.12g}')
-        print(f'Relative total change: {pr["relative_total_change"]:.6%}')
-        print(f'Stop reason: {pr["stop_reason"]}')
-        print(f'PageRank: {pr_finished - stats_finished:.6f} seconds')
-    if args.closeness:
-        centrality = result['closeness']
-        print(f'\nCloseness direction: {centrality["direction"]}')
-        print(f'Best pages by closeness: {", ".join(centrality["best_pages"])}')
-        print(f'Closeness score: {centrality["best_score"]:.12g}')
-        print(f'Closeness: {finished - pr_finished:.6f} seconds')
+    pr = result['pagerank']
+    print('\nTop pages by PageRank:')
+    for rank, page in enumerate(pr['top_5'], 1):
+        print(f'{rank}. {page["page"]}: {page["score"]:.12g}')
+    print(f'Iterations: {pr["iterations"]}')
+    print(f'Total PageRank: {pr["total_score"]:.12g}')
+    print(f'Relative total change: {pr["relative_total_change"]:.6%}')
+    print(f'Stop reason: {pr["stop_reason"]}')
+    print(f'PageRank: {pr_finished - stats_finished:.6f} seconds')
+    centrality = result['closeness']
+    print(f'\nCloseness direction: {centrality["direction"]}')
+    print(f'Best pages by closeness: {", ".join(centrality["best_pages"])}')
+    print(f'Closeness score: {centrality["best_score"]:.12g}')
+    print(f'Closeness: {finished - pr_finished:.6f} seconds')
     print(f'Total: {finished - started:.6f} seconds')
 
 
